@@ -1,0 +1,95 @@
+/*
+  RF Energy Harvesting Monitor - ESP32
+  -------------------------------------
+  Use case: Monitor output of a 2.4GHz RF energy harvesting circuit
+  (rectenna + matching network + voltage regulator -> ~3.3V output)
+
+  Hardware setup:
+  - Harvested voltage line -> Voltage divider -> ESP32 ADC pin (GPIO34)
+  - Current sense (via shunt resistor + INA219 OR simple shunt+ADC) -> GPIO35
+  - Optional: super capacitor / Li-ion storage to smooth supply
+  - Blynk app for live dashboard (Voltage, Current, Power, Energy)
+
+  Replace BLYNK_AUTH_TOKEN, ssid, pass with your credentials.
+*/
+
+#define BLYNK_TEMPLATE_ID   "YourTemplateID"
+#define BLYNK_TEMPLATE_NAME "RF Energy Harvester"
+#define BLYNK_AUTH_TOKEN    "YourAuthToken"
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+
+char ssid[] = "YOUR_WIFI_SSID";
+char pass[] = "YOUR_WIFI_PASSWORD";
+
+// ---- Pin Definitions ----
+const int VOLTAGE_PIN = 34;   // ADC pin reading harvested voltage (via divider)
+const int CURRENT_PIN = 35;   // ADC pin reading shunt voltage (for current calc)
+
+// ---- Circuit Parameters (adjust to your hardware) ----
+const float ADC_REF_VOLTAGE   = 3.3;     // ESP32 ADC reference
+const float ADC_RESOLUTION    = 4095.0;  // 12-bit ADC
+const float VOLTAGE_DIVIDER_RATIO = 2.0; // if using 2:1 divider for >3.3V sensing
+const float SHUNT_RESISTOR_OHMS   = 1.0; // shunt resistor value in ohms
+
+// ---- Energy accumulation ----
+float totalEnergy_mWh = 0;
+unsigned long lastMillis = 0;
+
+BlynkTimer timer;
+
+float readHarvestedVoltage() {
+  int raw = analogRead(VOLTAGE_PIN);
+  float vAtPin = (raw / ADC_RESOLUTION) * ADC_REF_VOLTAGE;
+  return vAtPin * VOLTAGE_DIVIDER_RATIO;  // actual harvested voltage
+}
+
+float readHarvestedCurrent_mA() {
+  int raw = analogRead(CURRENT_PIN);
+  float vShunt = (raw / ADC_RESOLUTION) * ADC_REF_VOLTAGE;
+  float current_A = vShunt / SHUNT_RESISTOR_OHMS;
+  return current_A * 1000.0; // convert to mA
+}
+
+void sendSensorData() {
+  float voltage = readHarvestedVoltage();
+  float current_mA = readHarvestedCurrent_mA();
+  float power_mW = voltage * current_mA;
+
+  unsigned long now = millis();
+  float deltaHours = (now - lastMillis) / 3600000.0;
+  totalEnergy_mWh += power_mW * deltaHours;
+  lastMillis = now;
+
+  Serial.printf("V: %.3f V | I: %.3f mA | P: %.3f mW | E: %.4f mWh\n",
+                voltage, current_mA, power_mW, totalEnergy_mWh);
+
+  Blynk.virtualWrite(V0, voltage);
+  Blynk.virtualWrite(V1, current_mA);
+  Blynk.virtualWrite(V2, power_mW);
+  Blynk.virtualWrite(V3, totalEnergy_mWh);
+}
+
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+
+  WiFi.begin(ssid, pass);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected!");
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  lastMillis = millis();
+  timer.setInterval(2000L, sendSensorData); // every 2 sec
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+}
